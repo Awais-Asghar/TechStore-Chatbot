@@ -70,7 +70,7 @@ Chatbot/
 - URL auto-linking (clickable product links in bot responses)
 - Bold text rendering (`**text**` → `<strong>`)
 - Typing indicator (animated dots while bot thinks)
-- Quick action buttons (Best Sellers, WiFi 6, Payment, Returns)
+- Quick action buttons (expanded to 10 in Phase 4.5)
 - Timestamps on every message
 - Smooth animations on message appearance
 - Mobile responsive design
@@ -80,24 +80,48 @@ Chatbot/
 - **WooCommerce API keys generated and configured in Vercel** (`WC_CONSUMER_KEY`, `WC_CONSUMER_SECRET`)
 - Removed the static product catalog from the system prompt — replaced entirely by **live product data**
 - Added `extractSearchTerms()` — strips filler/stop words and detects budget/price (e.g. "30k", "30,000") from the user's message
-- Added `searchProducts()` — calls the WooCommerce REST API (`/wp-json/wc/v3/products?search=...`) with Basic auth, `per_page=8`, `orderby=popularity`, optional `max_price` filter, and an 8s timeout
+- Added `searchProducts()` — calls the WooCommerce REST API (`/wp-json/wc/v3/products?search=...`) with Basic auth and an 8s timeout (price filtering is now done in JS — see Phase 4.5)
 - Cleans HTML/entities out of product descriptions and returns structured fields: name, price, regular/sale price, on-sale flag, stock status, permalink, description, short description, categories
 - Added `formatProductContext()` — injects live search results into the LLM context and instructs the model to ONLY use those products/URLs (anti-fabrication guardrail)
 - Tightened generation params: `temperature: 0.3`, `max_tokens: 1000`
 - Added graceful fallbacks: missing API keys, empty results, and Groq 429 rate-limit handling
+
+### Phase 4.5: Reliability & UX Hardening ✅ (July 13, 2026)
+
+**Search accuracy & anti-fabrication (`api/chat.js`)**
+- **Fixed budget queries returning zero results** — removed the `max_price` query param (it is a WooCommerce *Store-API* parameter that the v3 REST API ignores/misbehaves on). Price filtering is now done **client-side in JS** on the numeric price and sorted cheapest-first. This was the root cause of both the "no switches found" bug and the fabricated 404 URLs (the LLM invented products when search returned nothing).
+- **Preserve spec digits** — the `"6"` in "wifi 6" was being dropped by a `length > 1` filter; now kept, so WiFi 6 / WiFi 5 queries match.
+- **Singular-first search** (`buildSearchCandidates()`) — searches the singular form first (`switch`, `router`) because WooCommerce LIKE-search matches those far better than plurals; falls through candidate queries until one yields usable results.
+- **Typo tolerance** (`correctTypo()` + `editDistance()`) — maps misspelled product words to the nearest known keyword via Levenshtein distance (e.g. `swithces → switches`, `rooters → routers`) while leaving brand/model names (cisco, netgear, tp-link, rt-ax56u) untouched.
+- **De-duplicate junk variants** (`normalizeProducts()`) — drops "Product (1)", "Product (2)" clones.
+- **`sanitizeProductUrls()` guardrail** — any fabricated `/product/` URL in the reply is replaced with the shop page so a 404 link can never reach a customer.
+- Added more filler stopwords (`gimme`, `pls`, `wanna`, `bro`, etc.).
+
+**Abusive-message de-escalation (`api/chat.js`)**
+- New system-prompt section: on abusive input the bot stays calm, asks the reason for the frustration, shares ONE **hard-coded authentic** quote discouraging abuse (Tirmidhi 1977 / Bukhari 48 & Muslim 64 / Quran 49:11), and offers the human helpline — in the customer's language. The prompt explicitly forbids inventing or paraphrasing any hadith/verse to prevent misquotation.
+
+**Frontend UX (`Techbot.html`)**
+- **Fixed broken links** — `linkify()` now parses markdown `[text](url)` links and bare URLs in one pass (it previously mangled markdown links into broken hrefs → false "page not found"). Safari-safe (no regex lookbehind).
+- **Asterisk bullets** — `*` and `+` now render as list bullets, not just `-`/`•`.
+- **Spacing between products** — any bullet containing a `/product/` link gets extra bottom margin, visually separating product blocks.
+- **Emoji picker** — smiley button next to Send opens an emoji panel; inserts at the cursor, closes on outside click.
+- **Expanded quick-action buttons (10, no emoji icons):** Best Sellers, Routers, WiFi 6, Switches, Mesh Systems, Access Points, Cameras, Payment, Shipping, Returns.
 
 ---
 
 ## ⚠️ Known Issues (Current)
 
 ### 1. Search Term Matching
-Keyword extraction is heuristic (stop-word removal). Vague or misspelled queries can miss relevant products or return loosely related ones.
+Keyword extraction is heuristic (stop-word removal + typo correction + singular-first). It handles common typos and plurals now, but very vague queries can still miss or return loosely related products.
 
 ### 2. Single-Turn Context
 Each request is stateless — no conversation history is passed, so multi-turn follow-ups ("what about the cheaper one?") lack context.
 
-### 3. WooCommerce Dependency
-If the WooCommerce API is slow or down, product search returns empty and the bot falls back to category links only (8s timeout guards against hangs).
+### 3. WooCommerce Dependency / Slow Site
+If the WooCommerce API is slow or down, product search returns empty and the bot falls back to category links only (8s timeout guards against hangs). The live site can also be slow to load product pages (links are valid, just slow).
+
+### 4. Inconsistent Response Formatting
+The LLM sometimes formats products as bullet lists, sometimes as `|`-separated lines, and sometimes emits markdown `[text](url)` links. The frontend handles all of these, but the product-spacing UX only triggers on bulleted output.
 
 ---
 
