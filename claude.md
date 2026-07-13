@@ -1,7 +1,7 @@
 # TechBot – Project Documentation
 
 > AI Customer Support Chatbot for [techstore.com.pk](https://techstore.com.pk)
-> Last Updated: July 12, 2026
+> Last Updated: July 13, 2026
 
 ---
 
@@ -76,60 +76,32 @@ Chatbot/
 - Mobile responsive design
 - "Powered by TechStore.com.pk" footer
 
+### Phase 4: WooCommerce API Integration ✅ (COMPLETE)
+- **WooCommerce API keys generated and configured in Vercel** (`WC_CONSUMER_KEY`, `WC_CONSUMER_SECRET`)
+- Removed the static product catalog from the system prompt — replaced entirely by **live product data**
+- Added `extractSearchTerms()` — strips filler/stop words and detects budget/price (e.g. "30k", "30,000") from the user's message
+- Added `searchProducts()` — calls the WooCommerce REST API (`/wp-json/wc/v3/products?search=...`) with Basic auth, `per_page=8`, `orderby=popularity`, optional `max_price` filter, and an 8s timeout
+- Cleans HTML/entities out of product descriptions and returns structured fields: name, price, regular/sale price, on-sale flag, stock status, permalink, description, short description, categories
+- Added `formatProductContext()` — injects live search results into the LLM context and instructs the model to ONLY use those products/URLs (anti-fabrication guardrail)
+- Tightened generation params: `temperature: 0.3`, `max_tokens: 1000`
+- Added graceful fallbacks: missing API keys, empty results, and Groq 429 rate-limit handling
+
 ---
 
 ## ⚠️ Known Issues (Current)
 
-### 1. Static Product Catalog
-The bot only knows ~28 products hard-coded in the system prompt. Products not in this list get generic "browse our website" responses.
+### 1. Search Term Matching
+Keyword extraction is heuristic (stop-word removal). Vague or misspelled queries can miss relevant products or return loosely related ones.
 
-### 2. Wrong Product Links
-Since the LLM matches products by name similarity from a small static list, it sometimes returns the wrong product URL (e.g., asked about RT-AX56U but gets RT-AX82U link).
+### 2. Single-Turn Context
+Each request is stateless — no conversation history is passed, so multi-turn follow-ups ("what about the cheaper one?") lack context.
 
-### 3. Missing Detailed Specs
-The static catalog has abbreviated specs. The bot can't provide the full bullet-point specs shown on the actual product pages.
-
-### 4. No Real-Time Prices or Stock
-Prices in the catalog are snapshots that become outdated. Stock availability is unknown.
+### 3. WooCommerce Dependency
+If the WooCommerce API is slow or down, product search returns empty and the bot falls back to category links only (8s timeout guards against hangs).
 
 ---
 
 ## 🔜 What's Next (Remaining)
-
-### Phase 4: WooCommerce API Integration (Priority: HIGH)
-
-**Goal:** Connect TechBot to the live techstore.com.pk product catalog so it can search, fetch real specs, prices, and stock in real-time.
-
-**Status:** ⏳ Waiting for WooCommerce API keys from user
-
-#### Steps Required:
-
-1. **Generate WooCommerce API Keys** (User action):
-   - WordPress Admin → WooCommerce → Settings → Advanced → REST API
-   - Create key with **Read** permission
-   - Copy `Consumer Key` (ck_...) and `Consumer Secret` (cs_...)
-
-2. **Add Keys to Vercel Environment Variables**:
-   - `WC_CONSUMER_KEY` = your consumer key
-   - `WC_CONSUMER_SECRET` = your consumer secret
-
-3. **Update `api/chat.js`** (Code changes):
-   - Add `searchProducts()` function that calls WooCommerce REST API
-   - Endpoint: `https://techstore.com.pk/wp-json/wc/v3/products?search=KEYWORD`
-   - Extract real product data: name, price, sale price, description, permalink, stock status
-   - Inject search results into LLM context before generating response
-   - Remove static product catalog from system prompt (replaced by live data)
-   - Update response formatting rules to use bullet points
-
-#### Expected Results After Integration:
-- ✅ Real-time product specs pulled from website
-- ✅ Correct product URLs (no more wrong links)
-- ✅ Live prices including sale prices
-- ✅ Stock availability status
-- ✅ Bullet-point formatted specs matching the website
-- ✅ Coverage of ALL products, not just 28
-
----
 
 ### Phase 5: WordPress Embedding (Priority: MEDIUM)
 
@@ -159,8 +131,8 @@ Prices in the catalog are snapshots that become outdated. Stock availability is 
 | Variable | Where | Purpose |
 |----------|-------|---------|
 | `GROQ_API_KEY` | Vercel | Groq LLM API authentication |
-| `WC_CONSUMER_KEY` | Vercel (pending) | WooCommerce API read access |
-| `WC_CONSUMER_SECRET` | Vercel (pending) | WooCommerce API authentication |
+| `WC_CONSUMER_KEY` | Vercel ✅ | WooCommerce API read access |
+| `WC_CONSUMER_SECRET` | Vercel ✅ | WooCommerce API authentication |
 
 ---
 
@@ -173,7 +145,7 @@ Prices in the catalog are snapshots that become outdated. Stock availability is 
 | **Frontend** | Vanilla HTML/CSS/JS |
 | **Hosting** | Vercel (auto-deploy from GitHub) |
 | **Store Platform** | WordPress + WooCommerce |
-| **API Integration** | WooCommerce REST API v3 (pending) |
+| **API Integration** | WooCommerce REST API v3 ✅ (live) |
 
 ---
 
