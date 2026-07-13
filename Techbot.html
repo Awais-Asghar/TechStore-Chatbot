@@ -222,9 +222,9 @@ function linkify(text){
   let html='',inList=false;
   for(let line of lines){
     const trimmed=line.trim();
-    if(/^[-•]\s/.test(trimmed)){
+    if(/^[-•*+]\s/.test(trimmed)){
       if(!inList){html+='<ul>';inList=true}
-      html+='<li>'+trimmed.replace(/^[-•]\s/,'')+'</li>';
+      html+='<li>'+trimmed.replace(/^[-•*+]\s/,'')+'</li>';
     } else {
       if(inList){html+='</ul>';inList=false}
       html+=line+'\n';

@@ -2,15 +2,51 @@
 // Integrates with WooCommerce REST API for live product search
 // and Groq LLM for natural language responses.
 
+// ── Common product keywords for typo correction ─────────────────
+const PRODUCT_KEYWORDS = [
+  "switch", "switches", "router", "routers", "camera", "cameras",
+  "firewall", "firewalls", "cable", "cables", "adapter", "adapters",
+  "transceiver", "transceivers", "repeater", "repeaters", "extender",
+  "extenders", "modem", "modems", "antenna", "antennas", "server",
+  "servers", "access", "point", "points", "wireless", "ethernet",
+  "gigabit", "mesh", "module", "converter", "optical", "gpon", "wifi"
+];
+
+// ── Levenshtein edit distance ───────────────────────────────────
+function editDistance(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+// ── Fix a misspelled product word to the nearest known keyword ──
+function correctTypo(word) {
+  if (word.length < 5 || PRODUCT_KEYWORDS.includes(word)) return word;
+  let best = word, bestDist = Infinity;
+  for (const k of PRODUCT_KEYWORDS) {
+    const d = editDistance(word, k);
+    if (d < bestDist) { bestDist = d; best = k; }
+  }
+  const maxDist = word.length >= 7 ? 2 : 1;   // allow more slack for longer words
+  return bestDist <= maxDist ? best : word;
+}
+
 // ── Extract search keywords from natural language ───────────────
 function extractSearchTerms(message) {
   const lower = message.toLowerCase();
 
   // Remove common filler words to get better search terms
   const stopWords = [
-    "suggest", "recommend", "show", "give", "tell", "find", "search",
+    "suggest", "recommend", "show", "give", "gimme", "tell", "find", "search",
     "me", "my", "i", "want", "need", "looking", "for", "a", "an", "the",
-    "some", "any", "best", "good", "top", "please", "can", "you", "do",
+    "some", "any", "best", "good", "top", "please", "pls", "plz", "kindly",
+    "can", "you", "u", "do", "wanna", "gotta", "dear", "bro",
     "have", "what", "which", "is", "are", "in", "of", "with", "about",
     "under", "below", "above", "budget", "range", "price", "between",
     "specs", "specifications", "details", "info", "information",
@@ -36,7 +72,8 @@ function extractSearchTerms(message) {
     .filter(w => w.length > 1 || /^\d$/.test(w))
     .filter(w => !stopWords.includes(w))
     .filter(w => !/^\d+k$/.test(w))          // drop budget shorthand like "30k"
-    .filter(w => !/^\d{3,}$/.test(w));        // drop large bare numbers (budget, e.g. 30000)
+    .filter(w => !/^\d{3,}$/.test(w))         // drop large bare numbers (budget, e.g. 30000)
+    .map(correctTypo);                        // fix typos like "swithces" -> "switches"
 
   // Build search query from remaining keywords
   const searchQuery = words.join(" ").trim();
