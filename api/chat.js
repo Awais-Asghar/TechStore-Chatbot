@@ -32,13 +32,110 @@ function extractSearchTerms(message) {
   const words = lower
     .replace(/[^\w\s-]/g, " ")    // remove punctuation
     .split(/\s+/)
-    .filter(w => w.length > 1 && !stopWords.includes(w))
-    .filter(w => !/^\d+k?$/.test(w));  // remove bare numbers
+    // keep normal words AND short spec digits like the "6" in "wifi 6"
+    .filter(w => w.length > 1 || /^\d$/.test(w))
+    .filter(w => !stopWords.includes(w))
+    .filter(w => !/^\d+k$/.test(w))          // drop budget shorthand like "30k"
+    .filter(w => !/^\d{3,}$/.test(w));        // drop large bare numbers (budget, e.g. 30000)
 
   // Build search query from remaining keywords
   const searchQuery = words.join(" ").trim();
 
   return { searchQuery, maxPrice };
+}
+
+// ── Turn a plural word into its singular form (best-effort) ─────
+function singularize(word) {
+  if (/(ches|shes|sses|xes|zes)$/.test(word)) return word.slice(0, -2); // switches -> switch
+  if (/ies$/.test(word)) return word.slice(0, -3) + "y";                // categories -> category
+  if (/[^s]s$/.test(word)) return word.slice(0, -1);                    // routers -> router
+  return word;
+}
+
+// ── Build ordered list of search queries to try ────────────────
+function buildSearchCandidates(searchQuery) {
+  const q = searchQuery.trim();
+
+  // Singular form FIRST — WooCommerce does a literal LIKE match, so "switch"
+  // matches "switches"/"switch", but "switches" only matches "switches".
+  // Product titles use singular ("WiFi 6 Router"), so singular has best recall.
+  const singular = q.split(/\s+/).map(singularize).join(" ").trim();
+
+  const candidates = [singular, q];
+
+  // Last resort: the most specific single keyword (last word), singularized
+  const words = q.split(/\s+/).filter(w => w.length > 2);
+  if (words.length > 1) candidates.push(singularize(words[words.length - 1]));
+
+  return [...new Set(candidates)].filter(Boolean);
+}
+
+// ── Single WooCommerce fetch for one search term ───────────────
+async function fetchFromWoo(query, key, secret) {
+  // NOTE: do NOT send max_price here — it is a Store-API-only param and the
+  // v3 REST API ignores/misbehaves on it. We filter by price in JS instead.
+  const url = `https://techstore.com.pk/wp-json/wc/v3/products?search=${encodeURIComponent(query)}&per_page=20&status=publish`;
+  const auth = Buffer.from(`${key}:${secret}`).toString("base64");
+
+  const response = await fetch(url, {
+    headers: { "Authorization": `Basic ${auth}` },
+    signal: AbortSignal.timeout(8000)
+  });
+
+  if (!response.ok) {
+    console.error("WooCommerce API error:", response.status, await response.text());
+    return [];
+  }
+  return await response.json();
+}
+
+// ── Normalize raw WooCommerce products + drop duplicate variants ──
+function normalizeProducts(raw) {
+  const products = raw.map(p => {
+    // Strip HTML tags from description to get clean text
+    const desc = (p.description || "")
+      .replace(/<[^>]+>/g, "\n")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&#8211;/g, "–")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+      .substring(0, 1500);
+
+    const shortDesc = (p.short_description || "")
+      .replace(/<[^>]+>/g, "\n")
+      .replace(/&nbsp;/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+      .substring(0, 500);
+
+    const numericPrice = p.price ? Number(p.price) : 0;
+
+    return {
+      name: p.name,
+      numericPrice,
+      price: numericPrice ? `Rs. ${numericPrice.toLocaleString()}` : "Contact for price",
+      regular_price: p.regular_price ? `Rs. ${Number(p.regular_price).toLocaleString()}` : null,
+      sale_price: p.sale_price ? `Rs. ${Number(p.sale_price).toLocaleString()}` : null,
+      on_sale: p.on_sale || false,
+      stock_status: p.stock_status || "unknown",
+      url: p.permalink,
+      description: desc,
+      short_description: shortDesc,
+      categories: (p.categories || []).map(c => c.name).join(", "),
+    };
+  });
+
+  // De-duplicate junk variants like "Product Name (1)", "Product Name (2) (1)"
+  const seen = new Set();
+  return products.filter(p => {
+    const nameKey = p.name.toLowerCase().replace(/\s*\(\d+\)\s*/g, " ").replace(/\s+/g, " ").trim();
+    if (seen.has(nameKey)) return false;
+    seen.add(nameKey);
+    return true;
+  });
 }
 
 // ── WooCommerce product search ──────────────────────────────────
@@ -53,69 +150,59 @@ async function searchProducts(searchQuery, maxPrice) {
 
   if (!searchQuery || searchQuery.length < 2) return [];
 
-  try {
-    let url = `https://techstore.com.pk/wp-json/wc/v3/products?search=${encodeURIComponent(searchQuery)}&per_page=8&status=publish&orderby=popularity`;
+  // Try each candidate query until one yields USABLE results. When a budget is
+  // set, a candidate whose matches are all out-of-budget falls through to a
+  // broader candidate instead of returning nothing.
+  for (const q of buildSearchCandidates(searchQuery)) {
+    let raw;
+    try {
+      raw = await fetchFromWoo(q, key, secret);
+    } catch (err) {
+      console.error("WooCommerce search failed:", err.message);
+      continue;
+    }
+    if (!raw.length) continue;
+
+    let products = normalizeProducts(raw);
+
     if (maxPrice) {
-      url += `&max_price=${maxPrice}`;
+      products = products
+        .filter(p => p.numericPrice > 0 && p.numericPrice <= maxPrice)
+        .sort((a, b) => a.numericPrice - b.numericPrice);
     }
 
-    const auth = Buffer.from(`${key}:${secret}`).toString("base64");
-
-    const response = await fetch(url, {
-      headers: { "Authorization": `Basic ${auth}` },
-      signal: AbortSignal.timeout(8000)
-    });
-
-    if (!response.ok) {
-      console.error("WooCommerce API error:", response.status, await response.text());
-      return [];
+    if (products.length) {
+      console.log(`Query "${q}" -> ${products.length} usable results (budget: ${maxPrice || "none"})`);
+      return products.slice(0, 8);
     }
-
-    const products = await response.json();
-
-    return products.map(p => {
-      // Strip HTML tags from description to get clean text
-      const desc = (p.description || "")
-        .replace(/<[^>]+>/g, "\n")
-        .replace(/&nbsp;/g, " ")
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&#8211;/g, "–")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim()
-        .substring(0, 1500);
-
-      const shortDesc = (p.short_description || "")
-        .replace(/<[^>]+>/g, "\n")
-        .replace(/&nbsp;/g, " ")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim()
-        .substring(0, 500);
-
-      return {
-        name: p.name,
-        price: p.price ? `Rs. ${Number(p.price).toLocaleString()}` : "Contact for price",
-        regular_price: p.regular_price ? `Rs. ${Number(p.regular_price).toLocaleString()}` : null,
-        sale_price: p.sale_price ? `Rs. ${Number(p.sale_price).toLocaleString()}` : null,
-        on_sale: p.on_sale || false,
-        stock_status: p.stock_status || "unknown",
-        url: p.permalink,
-        description: desc,
-        short_description: shortDesc,
-        categories: (p.categories || []).map(c => c.name).join(", "),
-      };
-    });
-  } catch (err) {
-    console.error("WooCommerce search failed:", err.message);
-    return [];
   }
+
+  return [];
+}
+
+// ── Guardrail: replace any fabricated /product/ URL the LLM invents ──
+// Only real permalinks from the live search results are allowed. Anything
+// else pointing at /product/ is swapped for the shop page so no 404s ship.
+function sanitizeProductUrls(reply, products) {
+  const norm = u => u.replace(/[.,)]+$/, "").replace(/\/+$/, "").toLowerCase();
+  const allowed = new Set(products.map(p => p.url).filter(Boolean).map(norm));
+
+  return reply.replace(
+    /https?:\/\/(?:www\.)?techstore\.com\.pk\/product\/[^\s)\]]+/gi,
+    match => {
+      if (allowed.has(norm(match))) return match;
+      console.warn("Blocked fabricated product URL:", match);
+      return "https://techstore.com.pk/shop/";
+    }
+  );
 }
 
 // ── Format product results for LLM context ─────────────────────
 function formatProductContext(products) {
   if (!products.length) {
-    return "\n\n=== PRODUCT SEARCH RESULTS ===\nNo matching products found in the database. Tell the customer you couldn't find an exact match, and suggest browsing the relevant category page or searching on the website. Do NOT invent or guess any product names, URLs, or prices.\n";
+    return "\n\n=== PRODUCT SEARCH RESULTS ===\nNo matching products were found in the database for this query.\n" +
+      "You MUST NOT list any specific products, model numbers, prices, or /product/ URLs — you have no real data for them and inventing them is strictly forbidden.\n" +
+      "Instead: tell the customer you couldn't find an exact match, and offer ONLY the relevant category browse link(s) from the list above so they can look themselves.\n";
   }
 
   let context = "\n\n=== LIVE PRODUCT SEARCH RESULTS (from techstore.com.pk database) ===\n";
@@ -282,7 +369,10 @@ module.exports = async (req, res) => {
     }
 
     const data = await groqResponse.json();
-    const reply = data.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
+    let reply = data.choices?.[0]?.message?.content || "Sorry, I couldn't generate a reply.";
+
+    // Guardrail: strip any fabricated product URLs before sending to the user
+    reply = sanitizeProductUrls(reply, products);
 
     res.status(200).json({ reply });
 
