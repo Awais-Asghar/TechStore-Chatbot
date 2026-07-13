@@ -101,6 +101,7 @@
     .user .message-bubble a{color:rgba(255,255,255,.95)}
     .message-bubble ul,.message-bubble ol{margin:6px 0 6px 18px}
     .message-bubble li{margin-bottom:3px}
+    .message-bubble li.prod-end{margin-bottom:16px}   /* gap between products */
     .message-bubble strong{font-weight:600}
     .message-time{font-size:10px;color:var(--text-secondary);margin-top:4px;padding:0 4px}
     .user .message-time{text-align:right}
@@ -224,7 +225,10 @@ function linkify(text){
     const trimmed=line.trim();
     if(/^[-•*+]\s/.test(trimmed)){
       if(!inList){html+='<ul>';inList=true}
-      html+='<li>'+trimmed.replace(/^[-•*+]\s/,'')+'</li>';
+      const item=trimmed.replace(/^[-•*+]\s/,'');
+      // A bullet holding a product link ends a product block -> add space after it
+      const endClass=/\/product\//.test(item)?' class="prod-end"':'';
+      html+='<li'+endClass+'>'+item+'</li>';
     } else {
       if(inList){html+='</ul>';inList=false}
       html+=line+'\n';
