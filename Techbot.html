@@ -124,7 +124,7 @@
     .quick-btn:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-light)}
 
     /* ── INPUT ── */
-    .chat-input-area{padding:12px 16px 16px;background:var(--white);border-top:1px solid var(--border);flex-shrink:0}
+    .chat-input-area{padding:12px 16px 16px;background:var(--white);border-top:1px solid var(--border);flex-shrink:0;position:relative}
     .input-wrapper{
       display:flex;align-items:flex-end;gap:10px;
       background:var(--bg);border:2px solid var(--border);
@@ -149,6 +149,31 @@
     #sendBtn:active{transform:scale(.95)}
     #sendBtn:disabled{opacity:.5;cursor:not-allowed;transform:none}
     .send-icon{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+    /* ── EMOJI PICKER ── */
+    .emoji-btn{
+      width:38px;height:38px;background:transparent;border:none;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;flex-shrink:0;
+      color:var(--text-secondary);transition:color .15s,transform .15s;padding:0;
+    }
+    .emoji-btn:hover{color:var(--primary);transform:scale(1.1)}
+    .emoji-icon{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+    .emoji-panel{
+      position:absolute;bottom:100%;right:16px;margin-bottom:8px;
+      width:min(320px,calc(100% - 32px));max-height:216px;overflow-y:auto;
+      background:var(--white);border:1px solid var(--border);border-radius:14px;
+      box-shadow:0 8px 32px rgba(45,10,126,.18);padding:10px;
+      display:none;grid-template-columns:repeat(8,1fr);gap:4px;z-index:20;
+      animation:slideUp .18s ease;
+    }
+    .emoji-panel.open{display:grid}
+    .emoji-panel button{
+      border:none;background:transparent;font-size:20px;line-height:1;
+      padding:6px 0;border-radius:8px;cursor:pointer;transition:background .15s;
+    }
+    .emoji-panel button:hover{background:var(--primary-light)}
+    .emoji-panel::-webkit-scrollbar{width:5px}
+    .emoji-panel::-webkit-scrollbar-thumb{background:#C4BDD6;border-radius:10px}
 
     /* ── FOOTER ── */
     .chat-footer{text-align:center;padding:8px;font-size:11px;color:var(--text-secondary);background:var(--white)}
@@ -190,8 +215,12 @@
   </div>
 
   <div class="chat-input-area">
+    <div class="emoji-panel" id="emojiPanel"></div>
     <div class="input-wrapper">
       <textarea id="userInput" rows="1" placeholder="Type your message..." onkeydown="handleKey(event)"></textarea>
+      <button id="emojiBtn" class="emoji-btn" onclick="toggleEmoji(event)" title="Emoji" aria-label="Emoji picker">
+        <svg class="emoji-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4 4 0 0 0 7 0"/><line x1="9" y1="9.5" x2="9.01" y2="9.5"/><line x1="15" y1="9.5" x2="15.01" y2="9.5"/></svg>
+      </button>
       <button id="sendBtn" onclick="sendMessage()" title="Send">
         <svg class="send-icon" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
       </button>
@@ -211,6 +240,30 @@ const quickActions=document.getElementById('quickActions');
 document.getElementById('welcomeTime').textContent=formatTime(new Date());
 
 userInput.addEventListener('input',()=>{userInput.style.height='auto';userInput.style.height=Math.min(userInput.scrollHeight,120)+'px'});
+
+/* ── Emoji picker ── */
+const emojiPanel=document.getElementById('emojiPanel');
+const emojiBtn=document.getElementById('emojiBtn');
+const EMOJIS=['😀','😃','😄','😁','😊','🙂','😉','😍','😘','😎','🤩','🥳','🤔','🙃','😅','😂','🤣','😌','🥰','🤗','👍','👎','👌','🙏','👏','💪','🤝','👋','✌️','🤞','❤️','🧡','💛','💚','💙','💜','🖤','🔥','✨','⭐','🎉','🎁','💯','✅','❌','❓','❗','😢','💰','🛒','📦','🚀','📶','📡','💻','🖥️','⌨️','🖱️','📱','🔌','🔋','⚡','🌐','🏠','📞','📧','😡','😱','👀'];
+EMOJIS.forEach(e=>{
+  const b=document.createElement('button');
+  b.type='button';b.textContent=e;
+  b.addEventListener('click',()=>insertEmoji(e));
+  emojiPanel.appendChild(b);
+});
+function toggleEmoji(ev){ev.stopPropagation();emojiPanel.classList.toggle('open');}
+function insertEmoji(e){
+  const start=userInput.selectionStart??userInput.value.length;
+  const end=userInput.selectionEnd??userInput.value.length;
+  userInput.value=userInput.value.slice(0,start)+e+userInput.value.slice(end);
+  const pos=start+e.length;
+  userInput.focus();
+  userInput.setSelectionRange(pos,pos);
+  userInput.dispatchEvent(new Event('input'));  // keep textarea auto-resize in sync
+}
+document.addEventListener('click',ev=>{
+  if(!emojiPanel.contains(ev.target)&&!emojiBtn.contains(ev.target)) emojiPanel.classList.remove('open');
+});
 
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
 function formatTime(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
