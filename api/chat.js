@@ -2,8 +2,47 @@
 // Integrates with WooCommerce REST API for live product search
 // and Groq LLM for natural language responses.
 
+// ── Extract search keywords from natural language ───────────────
+function extractSearchTerms(message) {
+  const lower = message.toLowerCase();
+
+  // Remove common filler words to get better search terms
+  const stopWords = [
+    "suggest", "recommend", "show", "give", "tell", "find", "search",
+    "me", "my", "i", "want", "need", "looking", "for", "a", "an", "the",
+    "some", "any", "best", "good", "top", "please", "can", "you", "do",
+    "have", "what", "which", "is", "are", "in", "of", "with", "about",
+    "under", "below", "above", "budget", "range", "price", "between",
+    "specs", "specifications", "details", "info", "information",
+    "ok", "okay", "yes", "no", "thanks", "thank", "hi", "hello",
+    "available", "stock", "buy", "purchase", "order"
+  ];
+
+  // Extract budget/price if mentioned (e.g., "30k", "30000", "30,000")
+  let maxPrice = null;
+  const priceMatch = lower.match(/(\d{1,3}),?(\d{3})/);
+  const kMatch = lower.match(/(\d+)\s*k\b/);
+  if (priceMatch) {
+    maxPrice = parseInt(priceMatch[0].replace(",", ""));
+  } else if (kMatch) {
+    maxPrice = parseInt(kMatch[1]) * 1000;
+  }
+
+  // Clean up the message to extract product-relevant keywords
+  const words = lower
+    .replace(/[^\w\s-]/g, " ")    // remove punctuation
+    .split(/\s+/)
+    .filter(w => w.length > 1 && !stopWords.includes(w))
+    .filter(w => !/^\d+k?$/.test(w));  // remove bare numbers
+
+  // Build search query from remaining keywords
+  const searchQuery = words.join(" ").trim();
+
+  return { searchQuery, maxPrice };
+}
+
 // ── WooCommerce product search ──────────────────────────────────
-async function searchProducts(query) {
+async function searchProducts(searchQuery, maxPrice) {
   const key = process.env.WC_CONSUMER_KEY;
   const secret = process.env.WC_CONSUMER_SECRET;
 
@@ -12,13 +51,19 @@ async function searchProducts(query) {
     return [];
   }
 
+  if (!searchQuery || searchQuery.length < 2) return [];
+
   try {
-    const url = `https://techstore.com.pk/wp-json/wc/v3/products?search=${encodeURIComponent(query)}&per_page=5&status=publish`;
+    let url = `https://techstore.com.pk/wp-json/wc/v3/products?search=${encodeURIComponent(searchQuery)}&per_page=8&status=publish&orderby=popularity`;
+    if (maxPrice) {
+      url += `&max_price=${maxPrice}`;
+    }
+
     const auth = Buffer.from(`${key}:${secret}`).toString("base64");
 
     const response = await fetch(url, {
       headers: { "Authorization": `Basic ${auth}` },
-      signal: AbortSignal.timeout(8000) // 8s timeout
+      signal: AbortSignal.timeout(8000)
     });
 
     if (!response.ok) {
@@ -31,15 +76,15 @@ async function searchProducts(query) {
     return products.map(p => {
       // Strip HTML tags from description to get clean text
       const desc = (p.description || "")
-        .replace(/<[^>]+>/g, "\n")       // HTML tags → newlines
+        .replace(/<[^>]+>/g, "\n")
         .replace(/&nbsp;/g, " ")
         .replace(/&amp;/g, "&")
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
         .replace(/&#8211;/g, "–")
-        .replace(/\n{3,}/g, "\n\n")      // collapse multiple newlines
+        .replace(/\n{3,}/g, "\n\n")
         .trim()
-        .substring(0, 1500);             // limit length
+        .substring(0, 1500);
 
       const shortDesc = (p.short_description || "")
         .replace(/<[^>]+>/g, "\n")
@@ -54,7 +99,7 @@ async function searchProducts(query) {
         regular_price: p.regular_price ? `Rs. ${Number(p.regular_price).toLocaleString()}` : null,
         sale_price: p.sale_price ? `Rs. ${Number(p.sale_price).toLocaleString()}` : null,
         on_sale: p.on_sale || false,
-        stock_status: p.stock_status || "unknown", // "instock", "outofstock", "onbackorder"
+        stock_status: p.stock_status || "unknown",
         url: p.permalink,
         description: desc,
         short_description: shortDesc,
@@ -69,10 +114,12 @@ async function searchProducts(query) {
 
 // ── Format product results for LLM context ─────────────────────
 function formatProductContext(products) {
-  if (!products.length) return "";
+  if (!products.length) {
+    return "\n\n=== PRODUCT SEARCH RESULTS ===\nNo matching products found in the database. Tell the customer you couldn't find an exact match, and suggest browsing the relevant category page or searching on the website. Do NOT invent or guess any product names, URLs, or prices.\n";
+  }
 
   let context = "\n\n=== LIVE PRODUCT SEARCH RESULTS (from techstore.com.pk database) ===\n";
-  context += "Use these REAL results to answer the customer. Use the EXACT URLs below.\n\n";
+  context += "IMPORTANT: ONLY recommend products listed below. Do NOT invent products, URLs, or prices that are not in this list.\n\n";
 
   products.forEach((p, i) => {
     context += `PRODUCT ${i + 1}: ${p.name}\n`;
@@ -90,7 +137,7 @@ function formatProductContext(products) {
   return context;
 }
 
-// ── System prompt (without static catalog) ──────────────────────
+// ── System prompt ───────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are TechBot, the AI customer support assistant for techstore.com.pk,
 an online electronics and networking equipment store based in Multan, Pakistan.
 Website: https://techstore.com.pk
@@ -109,19 +156,28 @@ Address: Tech Store, New Shahshams Commercial Center, Mumtazabad, Multan
 - Payment: Cash on Delivery (COD), bank transfer, and card payment
 - Products: Mix of brand new (boxed) and branded used/renewed items, all tested and in working condition
 
-=== HOW TO ANSWER PRODUCT QUESTIONS ===
-You will receive LIVE PRODUCT SEARCH RESULTS from the store's real database below.
-When answering product questions:
+=== CRITICAL RULE: NEVER FABRICATE PRODUCTS ===
+You will receive LIVE PRODUCT SEARCH RESULTS from the store's real database.
+- ONLY mention products that appear in the search results below.
+- NEVER invent, guess, or fabricate product names, model numbers, URLs, prices, or specs.
+- If the search results don't have what the customer wants, say so honestly and suggest browsing the category page.
+- EVERY product URL you share MUST come exactly from the search results. Do NOT construct or guess URLs.
 
-1. USE the real data provided — do NOT make up specs or prices.
-2. FORMAT specs as bullet points like this:
-   - **Model:** ASUS RT-AX56U
-   - **WiFi Standard:** WiFi 6 (802.11ax)
-   - **Price:** Rs. 14,500
-3. Always include the EXACT product URL from the search results.
-4. If the product is on sale, highlight both the sale price and original price.
-5. Show stock status (In Stock / Out of Stock).
-6. If NO search results are provided or no matching product is found, suggest the customer browse the relevant category or search on the website.
+=== HOW TO FORMAT RESPONSES ===
+When presenting products, use bullet points:
+- **Model:** [exact name from search results]
+- **WiFi Standard:** [from description]
+- **Speed:** [from description]
+- **Processor:** [from description]
+- **Memory:** [from description]
+- **Ports:** [from description]
+- **Features:** [from description]
+- **Price:** Rs. X (was Rs. Y if on sale)
+- **Stock:** In Stock / Out of Stock
+- **Product Page:** [exact URL from search results]
+
+If the customer asks for budget recommendations, only show products from the search results that fit their budget.
+If the product is on sale, highlight both the sale price and original price.
 
 === CATEGORY BROWSE LINKS ===
 When a customer wants to browse a category, give them these links:
@@ -154,7 +210,7 @@ When a customer wants to browse a category, give them these links:
 === RESPONSE RULES ===
 - Format product specs using bullet points (use - prefix for each spec line).
 - Keep answers clear and helpful.
-- For stock availability: use the stock status from the search results. If unknown, say "Please check the product page or call us at +92 331 0000203."
+- ONLY use URLs from the search results or from the category links above. NEVER construct URLs yourself.
 - If asked something unrelated to the store (general chit chat is fine briefly, but do not answer questions about coding, homework, etc).
 - If a customer seems frustrated or asks for a human, immediately give them the phone number +92 331 0000203.
 - NEVER respond in a language different from what the customer used. This is your most important rule.
@@ -183,8 +239,12 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: "Message too long" });
     }
 
+    // ── Extract smart search terms and budget from user message ──
+    const { searchQuery, maxPrice } = extractSearchTerms(userMessage);
+    console.log(`Search: "${searchQuery}" | Budget: ${maxPrice || "none"}`);
+
     // ── Search WooCommerce for relevant products ──
-    const products = await searchProducts(userMessage);
+    const products = await searchProducts(searchQuery, maxPrice);
     const productContext = formatProductContext(products);
 
     // ── Build the full prompt with live product data ──
