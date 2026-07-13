@@ -275,7 +275,14 @@ function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMe
 function formatTime(d){return d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}
 
 function linkify(text){
-  let r=text.replace(/(https?:\/\/[^\s,)]+)/g,'<a href="$1" target="_blank" rel="noopener">$1</a>');
+  // Handle markdown links [text](url) AND bare URLs in a single pass so a
+  // markdown link is never mangled into a broken href. No lookbehind (Safari).
+  let r=text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s,)<\]]+)/g,
+    function(m,mdText,mdUrl,bareUrl){
+      const url=mdUrl||bareUrl;
+      const label=(mdUrl && !/^https?:\/\//.test(mdText))?mdText:url;
+      return '<a href="'+url+'" target="_blank" rel="noopener">'+label+'</a>';
+    });
   r=r.replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');
   // Convert markdown-style bullets to HTML list
   const lines=r.split('\n');
